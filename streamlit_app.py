@@ -4,8 +4,8 @@ import numpy as np
 from io import BytesIO
 
 # Define necessary data structures
-known_sources = ['Zoho Books B2B,Export Sales Data', 'Kithab Sales Report', 'Amazon', 'Flipkart - 7(A)(2)', 'Flipkart - 7(B)(2)', 'Meesho']
-
+known_sources = ['Zoho Books B2B,Export Sales Data', 'Kithab Sales Report', 'Amazon', 'Flipkart - 7(A)(2)', 'Flipkart - 7(B)(2)', 'Meesho','b2b ready to file format','b2cs ready to file format']
+#  test
 known_source_relevenat_columns = {
       'Zoho Books B2B,Export Sales Data': {
           'GST Identification Number (GSTIN)' : 'GSTIN/UIN of Recipient',
@@ -19,6 +19,21 @@ known_source_relevenat_columns = {
           'SubTotal' : 'Taxable Value',
           'Item Tax Amount' : 'Tax amount',
           'GST Treatment' : 'GST treatment'
+      },
+      'b2b ready to file format': {
+          'GSTIN/UIN of Recipient' : 'GSTIN/UIN of Recipient',
+          'Receiver Name' : 'Receiver Name',
+          'Invoice Number' : 'Invoice Number',
+          'Invoice date' : 'Invoice date',
+          'Invoice Value' : 'Invoice Value',
+          'Place Of Supply' : 'Place Of Supply',
+          'Rate' : 'Rate',
+          'Taxable Value' : 'Taxable Value'
+      },
+      'b2cs ready to file format': {
+          'Place Of Supply' : 'Place Of Supply',
+          'Rate' : 'Rate',
+          'Taxable Value' : 'Taxable Value'
       },
       'Kithab Sales Report': {
           'GSTIN Number' : 'GSTIN/UIN of Recipient',
@@ -262,33 +277,74 @@ needed_columns = [
 ]
 
 # Define necessary functions
-def select_columns_from_unknown_source(df, needed_columns):
+def select_columns_from_unknown_source(df, needed_columns, file_name, sheet_name):
     columns = df.columns.tolist()
-    available_columns_dict = {i+1: col for i, col in enumerate(columns)}
     available_name_of_needed_columns_dict = {}
     
-    st.write("Available columns:")
-    for num, col in available_columns_dict.items():
-        st.write(f"{num}: {col}")
+    st.write("Select the corresponding columns for each needed field:")
     
-    for col in needed_columns:
-        available_column_number = st.number_input(f"Enter number for {col} (0 if not found)", min_value=0, max_value=len(columns), step=1)
-        if available_column_number > 0 and available_column_number <= len(available_columns_dict):
-            available_name_of_needed_columns_dict[available_columns_dict[available_column_number]] = col
+    for needed_col in needed_columns:
+        # Add a "Not Available" option to the list of columns
+        options = ["Not Available"] + columns
+        
+        # Create a selectbox with search functionality for each needed column
+        selected_col = st.selectbox(
+            f"Select column for '{needed_col}'",
+            options,
+            key=f"{file_name}_{sheet_name}_select_{needed_col}",
+            help=f"Choose the column that corresponds to {needed_col}"
+        )
+        
+        # If a valid column is selected, add it to the dictionary
+        if selected_col != "Not Available":
+            available_name_of_needed_columns_dict[selected_col] = needed_col
     
     if available_name_of_needed_columns_dict:
+        # Select and rename the columns
         df = df[list(available_name_of_needed_columns_dict.keys())]
         df = df.rename(columns=available_name_of_needed_columns_dict)
     else:
-        df = pd.DataFrame()  # Create an empty DataFrame if no columns were selected
+        # Create an empty DataFrame if no columns were selected
+        df = pd.DataFrame()
     
+    # Add missing columns with NaN values
     for col in needed_columns:
         if col not in df.columns:
             df[col] = np.nan
     
     return df
 
+def integers_in_string(string):
+    # Extracting the digits from the string
+    digits = [char for char in string if char.isdigit()]
+
+    return len(digits)
+
+def gstin_or_state(df):
+    # Check each row and apply the logic
+    df['gst_or_state'] = df['Customer GSTIN number/ Place of Supply'].apply(lambda x: 'gst' if integers_in_string(x) > 2 else 'state')
+    return df
+
 def select_columns_from_known_source(df, needed_columns, source):
+    if source == 'VS internal format':
+        # Set the first row as the header
+        df = df[1:]  # Take the data less the header row
+        df.columns = ['S.No.','Date','Invoice No','Customer GSTIN number/ Place of Supply','Name of Customer','HSN/SAC Code','Invoice Base Amount (Rs.)','Rate of tax (%)','SGST (Rs.)','CGST (Rs.)','IGST (Rs.)','Exempted/Nill rated sales (Rs.)','Invoice Total (Rs.)']
+
+        df = gstin_or_state(df)
+
+        gst_df = df[df['gst_or_state']=='gst']
+        state_df = df[df['gst_or_state']=='state']
+
+        gst_df['gstin'] = gst_df['Customer GSTIN number/ Place of Supply']
+        gst_df['state'] = np.nan
+
+        state_df['state'] = state_df['Customer GSTIN number/ Place of Supply']
+        state_df['gstin'] = np.nan
+
+        df = pd.concat([gst_df, state_df], ignore_index=True)
+
+
     available_name_of_needed_columns_dict = known_source_relevenat_columns[source]
     columns_to_keep = list(available_name_of_needed_columns_dict.keys())
     df = df[columns_to_keep]
@@ -330,24 +386,83 @@ def format_place_of_supply(df):
     return df
 
 def fill_missing_values(df):
-    for index, row in df.iterrows():
-        invoice_value = row['Invoice Value'] if pd.notna(row['Invoice Value']) else 0
-        taxable_value = row['Taxable Value'] if pd.notna(row['Taxable Value']) else 0
-        tax_amount = row['Tax amount'] if pd.notna(row['Tax amount']) else 0
-        gst_rate = row['Rate'] if pd.notna(row['Rate']) else 0
-        cgst_rate = row['Cgst Rate'] if pd.notna(row['Cgst Rate']) else 0
-        sgst_rate = row['Sgst Rate'] if pd.notna(row['Sgst Rate']) else 0
-        igst_rate = row['Igst Rate'] if pd.notna(row['Igst Rate']) else 0
-        utgst_rate = row['Utgst Rate'] if pd.notna(row['Utgst Rate']) else 0
-        gst_rate_combined = cgst_rate + sgst_rate + igst_rate + utgst_rate
+  for index, row in df.iterrows():
 
-        if gst_rate == 0 and gst_rate_combined != 0:
-            gst_rate = gst_rate_combined
-            df.at[index, 'Rate'] = gst_rate
+    invoice_value = 0 if pd.isna(row['Invoice Value']) else row['Invoice Value']
+    taxable_value = 0 if pd.isna(row['Taxable Value']) else row['Taxable Value']
+    tax_amount = 0 if pd.isna(row['Tax amount']) else row['Tax amount']
+    gst_rate = 0 if pd.isna(row['Rate']) else row['Rate']
+    cgst_rate = 0 if pd.isna(row['Cgst Rate']) else row['Cgst Rate']
+    sgst_rate = 0 if pd.isna(row['Sgst Rate']) else row['Sgst Rate']
+    igst_rate = 0 if pd.isna(row['Igst Rate']) else row['Igst Rate']
+    utgst_rate = 0 if pd.isna(row['Utgst Rate']) else row['Utgst Rate']
+    gst_rate_combined = cgst_rate + sgst_rate + igst_rate + utgst_rate
 
-        # ... (include other conditions for filling missing values)
+    if gst_rate == 0 and gst_rate_combined != 0:
+      gst_rate = gst_rate_combined
+      df.at[index, 'Rate'] = gst_rate
 
-    return df
+    if invoice_value != 0 and gst_rate != 0 and taxable_value == 0:
+            taxable_value = invoice_value * 100 / (100 + gst_rate)
+            df.at[index, 'Taxable Value'] = taxable_value
+            continue
+
+    elif invoice_value != 0 and gst_rate == 0 and taxable_value != 0:
+        tax_amount = invoice_value - taxable_value
+        gst_rate = (tax_amount / taxable_value) * 100
+        df.at[index, 'Rate'] = gst_rate
+        continue
+
+    elif invoice_value != 0 and gst_rate == 0 and taxable_value == 0 and tax_amount != 0:
+        taxable_value = invoice_value - tax_amount
+        gst_rate = (tax_amount / taxable_value) * 100
+        df.at[index, 'Rate'] = gst_rate
+        df.at[index, 'Taxable Value'] = taxable_value
+        continue
+
+    elif invoice_value != 0 and gst_rate == 0 and taxable_value == 0 and gst_rate_combined != 0:
+        gst_rate = gst_rate_combined
+        taxable_value = invoice_value * 100 / (100 + gst_rate)
+        df.at[index, 'Rate'] = gst_rate
+        df.at[index, 'Taxable Value'] = taxable_value
+        continue
+
+    if invoice_value == 0 and gst_rate != 0 and taxable_value != 0:
+        invoice_value = taxable_value + (taxable_value * gst_rate / 100)
+        df.at[index, 'Invoice Value'] = invoice_value
+        continue
+
+    if invoice_value == 0 and gst_rate != 0 and taxable_value == 0 and tax_amount != 0:
+        taxable_value = tax_amount * 100 / gst_rate
+        invoice_value = taxable_value + tax_amount
+        df.at[index, 'Invoice Value'] = invoice_value
+        df.at[index, 'Taxable Value'] = taxable_value
+        continue
+
+    elif invoice_value == 0 and gst_rate == 0 and taxable_value != 0 and tax_amount != 0:
+        gst_rate = (tax_amount / taxable_value) * 100
+        invoice_value = taxable_value + tax_amount
+        df.at[index, 'Rate'] = gst_rate
+        df.at[index, 'Invoice Value'] = invoice_value
+        continue
+
+    elif invoice_value == 0 and gst_rate == 0 and taxable_value != 0 and tax_amount == 0 and gst_rate_combined != 0:
+        gst_rate = gst_rate_combined
+        invoice_value = taxable_value + (taxable_value * gst_rate / 100)
+        df.at[index, 'Rate'] = gst_rate
+        df.at[index, 'Invoice Value'] = invoice_value
+        continue
+
+    elif invoice_value == 0 and gst_rate == 0 and taxable_value == 0 and tax_amount != 0 and gst_rate_combined != 0:
+        gst_rate = gst_rate_combined
+        taxable_value = tax_amount * 100 / gst_rate
+        invoice_value = taxable_value + tax_amount
+        df.at[index, 'Rate'] = gst_rate
+        df.at[index, 'Taxable Value'] = taxable_value
+        df.at[index, 'Invoice Value'] = invoice_value
+        continue
+
+  return df
 
 def create_place_of_origin_column(df, customer_state):
     df['place_of_origin'] = np.nan
@@ -400,18 +515,93 @@ def create_b2b_dataframe(df):
                           'Invoice Value', 'Place Of Supply', 'Reverse Charge', 'Applicable % of Tax Rate',
                           'Invoice Type', 'E-Commerce GSTIN', 'Rate', 'Taxable Value', 'Cess Amount']
     
+    # Ensure all needed columns exist
     for col in b2b_columns_needed:
         if col not in b2b.columns:
             b2b[col] = np.nan
     
+    # Filter out rows with negative Taxable Value or Invoice Value
+    negative_transactions = b2b[(b2b['Taxable Value'] < 0) | (b2b['Invoice Value'] < 0)]
+    b2b = b2b[(b2b['Taxable Value'] >= 0) & (b2b['Invoice Value'] >= 0)]
+    
+    # Notify user about excluded transactions with a prominent warning
+    if not negative_transactions.empty:
+        st.markdown(
+            """
+            <div style="padding: 1rem; border-radius: 0.5rem; background-color: #ffcccc; border: 2px solid #ff0000;">
+                <h3 style="color: #ff0000; margin-top: 0;">⚠️ Warning: Negative Value Transactions Detected</h3>
+                <p style="font-weight: bold;">Some transactions with negative Taxable Value or Invoice Value were excluded from B2B.</p>
+                <p>Please handle these transactions manually. See details below.</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        
+        st.markdown("### Excluded Transactions:")
+        st.dataframe(negative_transactions[b2b_columns_needed], use_container_width=True)
+        
+        # Add a download button for excluded transactions
+        csv = negative_transactions[b2b_columns_needed].to_csv(index=False)
+        st.download_button(
+            label="Download Excluded Transactions",
+            data=csv,
+            file_name="excluded_b2b_transactions.csv",
+            mime="text/csv",
+        )
+    
     return b2b[b2b_columns_needed]
 
 def create_b2cs_dataframe(df):
-    b2cs = df[df['transaction_type'] == 'b2cs']
+    b2cs = df[df['transaction_type'] == 'b2cs'].copy()
     b2cs['Type'] = 'b2cs'
     b2cs['Applicable % of Tax Rate'] = np.nan
     b2cs['E-Commerce GSTIN'] = np.nan
     
+    # Group by 'Place Of Supply' and 'Rate', but don't aggregate yet
+    grouped = b2cs.groupby(['Place Of Supply', 'Rate'])
+    
+    # Identify groups with negative Taxable Value
+    negative_groups = grouped['Taxable Value'].sum()[grouped['Taxable Value'].sum() < 0].reset_index()
+    
+    if not negative_groups.empty:
+        st.markdown(
+            """
+            <div style="padding: 1rem; border-radius: 0.5rem; background-color: #ffcccc; border: 2px solid #ff0000;">
+                <h3 style="color: #ff0000; margin-top: 0;">⚠️ Warning: Negative Taxable Value Detected in B2CS Groups</h3>
+                <p style="font-weight: bold;">Some state and rate combinations have a negative total Taxable Value in B2CS transactions.</p>
+                <p>These groups have been excluded from the B2CS summary. Please review and handle these transactions manually.</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        
+        st.markdown("### Excluded B2CS Groups:")
+        st.dataframe(negative_groups, use_container_width=True)
+        
+        # Get all transactions from the negative groups
+        negative_transactions = pd.DataFrame()
+        for _, row in negative_groups.iterrows():
+            group_transactions = b2cs[(b2cs['Place Of Supply'] == row['Place Of Supply']) & 
+                                      (b2cs['Rate'] == row['Rate'])]
+            negative_transactions = pd.concat([negative_transactions, group_transactions])
+        
+        st.markdown("### All Transactions from Excluded Groups:")
+        st.dataframe(negative_transactions, use_container_width=True)
+        
+        # Add a download button for excluded transactions
+        csv = negative_transactions.to_csv(index=False)
+        st.download_button(
+            label="Download Excluded B2CS Transactions",
+            data=csv,
+            file_name="excluded_b2cs_transactions.csv",
+            mime="text/csv",
+        )
+        
+        # Remove negative groups from b2cs DataFrame
+        b2cs = b2cs[~((b2cs['Place Of Supply'].isin(negative_groups['Place Of Supply'])) & 
+                      (b2cs['Rate'].isin(negative_groups['Rate'])))]
+    
+    # Now perform the aggregation on the filtered data
     b2cs = b2cs.groupby(['Place Of Supply', 'Rate'])[['Taxable Value', 'Cess Amount']].sum().reset_index()
     
     b2cs_columns_needed = ['Type', 'Place Of Supply', 'Applicable % of Tax Rate', 'Rate', 'Taxable Value', 'Cess Amount', 'E-Commerce GSTIN']
@@ -426,9 +616,39 @@ def create_b2cl_dataframe(df):
     b2cl_columns_needed = ['Invoice Number', 'Invoice Date', 'Invoice Value', 'Place Of Supply',
                            'Applicable % of Tax Rate', 'Rate', 'Taxable Value', 'Cess Amount', 'E-Commerce GSTIN']
     
+    # Ensure all needed columns exist
     for col in b2cl_columns_needed:
         if col not in b2cl.columns:
             b2cl[col] = np.nan
+    
+    # Filter out rows with negative Taxable Value or Invoice Value
+    negative_transactions = b2cl[(b2cl['Taxable Value'] < 0) | (b2cl['Invoice Value'] < 0)]
+    b2cl = b2cl[(b2cl['Taxable Value'] >= 0) & (b2cl['Invoice Value'] >= 0)]
+    
+    # Notify user about excluded transactions with a prominent warning
+    if not negative_transactions.empty:
+        st.markdown(
+            """
+            <div style="padding: 1rem; border-radius: 0.5rem; background-color: #ffcccc; border: 2px solid #ff0000;">
+                <h3 style="color: #ff0000; margin-top: 0;">⚠️ Warning: Negative Value Transactions Detected in B2CL</h3>
+                <p style="font-weight: bold;">Some transactions with negative Taxable Value or Invoice Value were excluded from B2CL.</p>
+                <p>Please handle these transactions manually. See details below.</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        
+        st.markdown("### Excluded B2CL Transactions:")
+        st.dataframe(negative_transactions[b2cl_columns_needed], use_container_width=True)
+        
+        # Add a download button for excluded transactions
+        csv = negative_transactions[b2cl_columns_needed].to_csv(index=False)
+        st.download_button(
+            label="Download Excluded B2CL Transactions",
+            data=csv,
+            file_name="excluded_b2cl_transactions.csv",
+            mime="text/csv",
+        )
     
     return b2cl[b2cl_columns_needed]
 
@@ -438,26 +658,41 @@ def convert_df_to_csv(df):
 # Streamlit app
 def main():
     st.title("GST FILINGS AUTOMATION")
-    uploaded_files = st.file_uploader("Choose Excel files", accept_multiple_files=True, type=['xlsx', 'xls'])
+    uploaded_files = st.file_uploader("Choose Excel or CSV files", accept_multiple_files=True, type=['xlsx', 'xls', 'csv'])
     
     if uploaded_files:
         all_dataframes = []
         for uploaded_file in uploaded_files:
             st.write(f"Processing: {uploaded_file.name}")
             
-            excel_file = pd.ExcelFile(uploaded_file)
-            sheet_names = excel_file.sheet_names
-            selected_sheets = st.multiselect(f"Select relevant sheets from {uploaded_file.name}", sheet_names)
+            if uploaded_file.name.endswith(('.xlsx', '.xls')):
+                excel_file = pd.ExcelFile(uploaded_file)
+                sheet_names = excel_file.sheet_names
+                selected_sheets = st.multiselect(f"Select relevant sheets from {uploaded_file.name}", sheet_names)
+                
+                for sheet in selected_sheets:
+                    df = excel_file.parse(sheet)
+                    is_known_source = st.checkbox(f"Is {sheet} from a known source?", key=f"{uploaded_file.name}_{sheet}_known")
+                    
+                    if is_known_source:
+                        source = st.selectbox("Select the source", known_sources, key=f"{uploaded_file.name}_{sheet}_source")
+                        df = select_columns_from_known_source(df, needed_columns, source)
+                    else:
+                        df = select_columns_from_unknown_source(df, needed_columns, uploaded_file.name, sheet)
+                    
+                    if not df.empty:
+                        df = format_place_of_supply(df)
+                        all_dataframes.append(df)
             
-            for sheet in selected_sheets:
-                df = excel_file.parse(sheet)
-                is_known_source = st.checkbox(f"Is {sheet} from a known source?", key=f"{uploaded_file.name}_{sheet}_known")
+            elif uploaded_file.name.endswith('.csv'):
+                df = pd.read_csv(uploaded_file)
+                is_known_source = st.checkbox(f"Is {uploaded_file.name} from a known source?", key=f"{uploaded_file.name}_known")
                 
                 if is_known_source:
-                    source = st.selectbox("Select the source", known_sources, key=f"{uploaded_file.name}_{sheet}_source")
+                    source = st.selectbox("Select the source", known_sources, key=f"{uploaded_file.name}_source")
                     df = select_columns_from_known_source(df, needed_columns, source)
                 else:
-                    df = select_columns_from_unknown_source(df, needed_columns)
+                    df = select_columns_from_unknown_source(df, needed_columns, uploaded_file.name)
                 
                 if not df.empty:
                     df = format_place_of_supply(df)
